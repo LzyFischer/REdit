@@ -6,12 +6,6 @@ contrastive_reptile_pgnull.py
 Reptile meta-learning + contrastive effect objective
 with **anchor prediction-gradient null-space protection**.
 
-• 每个 inner step：只用当下 batch 的 anchor sample，
-  直接从 compute_task_loss 内部的 AP.calculate_effect 取出该样本的
-  “参数预测梯度” g（第二返回值），然后把当前 .grad 投影到 g 的正交补。
-• 保护强度用 --prot_ratio ∈ [0,1] 控制：0=不保护；1=硬投影；中间为软投影。
-
-依赖：
 $ pip install torch tqdm
 """
 

@@ -6,12 +6,6 @@ contrastive_reptile_pgnull.py
 Reptile meta-learning + contrastive effect objective
 with **anchor prediction-gradient null-space protection**.
 
-• 每个 inner step：只用当下 batch 的 anchor sample，
-  直接从 compute_task_loss 内部的 AP.calculate_effect 取出该样本的
-  “参数预测梯度” g（第二返回值），然后把当前 .grad 投影到 g 的正交补。
-• 保护强度用 --prot_ratio ∈ [0,1] 控制：0=不保护；1=硬投影；中间为软投影。
-
-依赖：
 $ pip install torch tqdm
 """
 
@@ -65,19 +59,19 @@ def get_args() -> argparse.Namespace:
 
     # logic 选择（逗号分隔，二选一，include 优先于 exclude）
     ap.add_argument("--include_logic", type=str, default='',
-                    help="只保留这些逻辑（逗号分隔整段文本，或 @file:path.txt）")
+                    help="@file:path.txt")
     ap.add_argument("--exclude_logic", type=str, default="",
-                    help="排除这些逻辑（逗号分隔整段文本，或 @file:path.txt）")
+                    help="@file:path.txt")
     # =============================================================================
     # Args（在 get_args() 里新增两个参数）
     # =============================================================================
     ap.add_argument(
         "--include_rows", type=str, default="",
-        help="仅保留这些 rows 的索引（逗号分隔或区间，如 0,5,10-20，或 @file:path.txt）"
+        help=" 0,5,10-20 @file:path.txt"
     )
     ap.add_argument(
         "--exclude_rows", type=str, default="",
-        help="排除这些 rows 的索引（逗号分隔或区间，如 1-100，或 @file:path.txt）"
+        help=" 1-100 @file:path.txt"
     )
 
     # reptile / inner
@@ -129,7 +123,6 @@ def _load_list_from_arg(s: str) -> list[str]:
     return [x.strip() for x in s.split(",") if x.strip()]
 
 def _normalize_logic_key(k: str) -> str:
-    """稳定化整段键：去两端空白、逐行 strip、压缩行内多空白为单空格、统一换行。"""
     if not isinstance(k, str):
         return k
     k = k.replace("\r\n", "\n").replace("\r", "\n").strip().lower()
@@ -166,13 +159,7 @@ def _parse_idx_tokens(s: str) -> List[str]:
     return [x.strip() for x in s.split(",") if x.strip()]
 
 def _expand_indices(spec: str, n_total: int) -> List[int]:
-    """
-    解析索引说明：
-      - 单点: 0, 5, -1（负索引按 Python 语义从末尾回绕）
-      - 区间: '10-20'、'-5--1'（含端点；可负数）
-      - @file: 每行一个 token（可混合单点/区间）
-    超界自动裁剪到 [0, n_total-1]，去重后升序。
-    """
+
     toks = _parse_idx_tokens(spec)
     idxs: set[int] = set()
 

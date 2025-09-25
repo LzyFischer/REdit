@@ -5,7 +5,7 @@ weighted_edit_distance_matrix.py
 Compute pair-wise weighted edit distance (∑|p_i-q_i|) on **normalised** weights
 and plot the heat-map.
 
-运行示例
+
 --------
 python weighted_edit_distance_matrix.py \
     --input 

@@ -3,11 +3,6 @@ from config.paths import DATA_DIR, RESULTS_DIR, OUTPUTS_DIR, ATTR_SCORES_DIR
 """
 plot_ot_distance.py
 ────────────────────────────────────────────────────────────────────────────
-1. 读取 circuit-mask JSON (logic_###_splitS_part[A|B].json)
-2. 将每个掩码展平成 bag-of-edges，构建全局词典并转为直方图
-3. 依照 3-split averaging 规则计算逻辑级 Wasserstein-1 距离
-4. (可选) 依据抽象公式距离进行层次聚类重新排序
-5. 绘制热图
 
 2025-06-14
 """

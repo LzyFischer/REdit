@@ -1,11 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-将 {template_id: [ {problem, result}, ... ]} 转为目标列表格式，并生成 corrupt 版本：
-- 句子用逗号/句号分割，取第一句与最后一句
-- 用第一句的 token 片段（长度=最后一句的 token 长度）替换掉最后一句
-- 若第一句长度不足，用'?'按 tokenizer 粒度补齐；若过长则截断
-- token 长度以 Qwen/Qwen-3B-Instruct tokenizer 为准；无法加载时回退字符级
 """
 
 from __future__ import annotations
@@ -168,10 +163,10 @@ def build_item(template_id: str, problem: str, result: str, tokwrap: TokWrap) ->
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--input", type=Path, default="data/logic/math.json", help="输入 JSON: {tid: [{problem,result}, ...], ...}")
-    ap.add_argument("--output", type=Path, default="data/corrupt/math.json", help="输出 JSON: List[...]（目标格式）")
+    ap.add_argument("--input", type=Path, default="data/logic/math.json", help="{tid: [{problem,result}, ...], ...}")
+    ap.add_argument("--output", type=Path, default="data/corrupt/math.json", help="")
     ap.add_argument("--model_name", type=str, default="Qwen/Qwen2.5-3B-Instruct",
-                    help="用于长度判断的 tokenizer。失败则回退字符级。")
+                    help="")
     ap.add_argument("--seed", type=int, default=42)
     args = ap.parse_args()
 

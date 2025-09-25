@@ -3,11 +3,7 @@ from config.paths import DATA_DIR, RESULTS_DIR, OUTPUTS_DIR, ATTR_SCORES_DIR
 """
 plot_weighted_edit_distance.py
 ────────────────────────────────────────────────────────────────────────────
-1. 读取 circuit-mask JSON (logic_###_splitS_part[A|B].json)
-2. 把每个掩码展平成 {edge: normalised_weight} 字典
-3. 依照 3-split averaging 规则计算加权 L₁ 距离
-4. (可选) 根据抽象公式距离做层次聚类重新排序
-5. 绘制热图
+
 
 Author : <you>
 Date   : 2025-06-14

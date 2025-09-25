@@ -4,9 +4,6 @@ from config.paths import DATA_DIR, RESULTS_DIR, OUTPUTS_DIR, ATTR_SCORES_DIR
 """
 generate_attr_scores.py
 ────────────────────────────────────────────────────────────────────────────
-1. 为给定 DATA_FILE 中的 prompts 生成多个随机 A/B 子集
-2. 对每个子集计算 mask_gradient_prune_scores
-3. 按 TOP_QUANT 阈值剪枝并保存 JSON + 可视化
 """
 import pdb
 import argparse
@@ -26,7 +23,7 @@ from auto_circuit.utils.graph_utils import patchable_model
 from auto_circuit.types import PruneScores
 
 
-# ═════════════════════════════ 1. 工具函数 ════════════════════════════════
+
 def model_tag(name: str) -> str:
     last = name.split("/")[-1]
     return "".join("_" if c in ".-" else c for c in last).lower()
@@ -38,16 +35,16 @@ def quant_tag(q: float) -> str:
 
 
 def load_model(model_name: str, device: t.device, args):
-    # 1) 先按 auto_circuit 方式把“基础 HF 模型”加载进来
-    base = load_tl_model(model_name, device)   # TL 包装的 HF 模型
+
+    base = load_tl_model(model_name, device)  
     base.cfg.parallel_attn_mlp = False
 
-    # 2) （可选）把 ckpt 权重灌进 base（在 patchable_model 之前做）
+
     if args.resume is not None:
         ckpt = t.load(args.resume, map_location="cpu")
-        sd = ckpt.get("model_state", ckpt)  # 兼容直接存 state_dict 的情况
+        sd = ckpt.get("model_state", ckpt) 
 
-        # 将 ckpt 的张量 dtype 对齐到当前模型参数 dtype
+
         model_sd = base.state_dict()
         aligned_sd = {}
         for k, v in sd.items():
@@ -62,7 +59,7 @@ def load_model(model_name: str, device: t.device, args):
         if "rng_state" in ckpt:
             t.set_rng_state(ckpt["rng_state"])
 
-    # 3) 给每个 block 补上 hook（不影响已加载的权重）
+
     for i, block in enumerate(base.blocks):
         if not hasattr(block, "hook_resid_mid"):
             block.hook_resid_mid = nn.Identity()
@@ -70,7 +67,7 @@ def load_model(model_name: str, device: t.device, args):
 
     print("[info]  Added Identity hook_resid_mid to all blocks")
 
-    # 4) 最后再做 patchable 包装
+   
     return patchable_model(
         base, factorized=False, slice_output="last_seq",
         separate_qkv=True, device=device,
@@ -124,7 +121,7 @@ def prune_and_save(
         with open(json_path, "w") as fp:
             json.dump({k: v.tolist() for k, v in pruned.items()}, fp, indent=2)
 
-        # 可视化（如该函数内部会保存，则也会落在当前工作目录或需另外指定）
+
         draw_seq_graph(
             model, pruned,
             score_threshold=thresh,
@@ -134,7 +131,7 @@ def prune_and_save(
         print(f"   ✓ {subset_tag:<14} q={q:.3f} → {json_path.relative_to(out_dir)}")
 
 
-# ═════════════════════════════ 2. CLI 入口 ════════════════════════════════
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser()
     p.add_argument("--model", default="Qwen/Qwen2.5-3B-Instruct",
@@ -172,7 +169,7 @@ def main():
     print(f"[info] Using run tag: {run_tag}")
 
     model_dir = out_root / dataset_tag / model_tag(args.model)
-    # 预建各量化目录下的 tag/figures 方便后续保存
+
     for q in args.quants:
         (model_dir / quant_tag(q) / run_tag / "figures").mkdir(parents=True, exist_ok=True)
 
@@ -189,7 +186,7 @@ def main():
 
         k = min(args.subset_k, len(prompts) // 2 or 1)
         if dataset_tag == 'level_3':
-            k = min(k, 10)   # level_3 的 prompts 太长，限制 k ≤ 10
+            k = min(k, 10)  
 
         for split in range(1, args.splits + 1):
             rng = random.Random(args.seed + split - 1)

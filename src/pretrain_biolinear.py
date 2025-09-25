@@ -12,11 +12,7 @@ from src.get_dataset import LogicDataset, load_augmented_json_grouped, collate_f
 from src.patch_qwen_bio import replace_linear_with_biolinear, connection_cost
 
 def flatten_logic_batch_to_lm(batch, device, ignore_index=-100):
-    """
-    将 LogicDataset 的 collate 结果展开为标准 LM 批：
-      input_ids [N, L], attention_mask [N, L], labels [N, L]
-    我们把 clean 和 corrupt 都当作训练样本（下一个 token 预测由 HF 内部 shift）。
-    """
+
     xs, masks = [], []
     # batch: { logic: [ [g1_dict, g2_dict], ... ] }
     for _, pair_list in batch.items():

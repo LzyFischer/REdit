@@ -3,10 +3,6 @@ from config.paths import DATA_DIR, RESULTS_DIR, OUTPUTS_DIR, ATTR_SCORES_DIR
 """
 plot_logic_distance.py
 ────────────────────────────────────────────────────────────────────────────
-1. 读取 mask JSON (logic_###_splitS_part[A|B].json)
-2. 计算逻辑间 Jaccard 距离 (根据 3-split 规则)
-3. 解析抽象公式 → 生成自定义距离并用层次聚类重新排序行列
-4. 绘制热图
 
 2025-06-14
 """

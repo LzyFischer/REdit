@@ -3,13 +3,15 @@
 """
 generate_attr_scores_eap.py
 ────────────────────────────────────────────────────────────────────────────
-用 EAP（Edge Attribution Patching）替换 mask_gradient_prune_scores 流水线，
-完全移除 auto_circuit 依赖，但保留原有数据集/切分/阈值与落盘结构。
+Replace the mask_gradient_prune_scores pipeline with EAP (Edge Attribution Patching),
+fully removing the auto_circuit dependency while preserving the original
+dataset/split/threshold and on-disk layout.
 
-输出（按你的原路径保持不变）：
-- 稀疏边 JSON：outputs/attr_scores/<dataset>/<model>/<keep%>/<run_tag>/<logic_name>_split{seed}_part{A|B}.json
-- 热力图 PNG：    .../figures/<logic_name>_{subset_tag}.png
-- 电路图 PNG：    .../figures/<logic_name>_{subset_tag}_circuit_top100.png
+Outputs (same path format as before):
+- Sparse-edge JSON:
+  outputs/attr_scores/<dataset>/<model>/<keep%>/<run_tag>/<logic_name>_split{seed}_part{A|B}.json
+- Heatmap PNG: .../figures/<logic_name>_{subset_tag}.png
+- Circuit PNG: .../figures/<logic_name>_{subset_tag}_circuit_top100.png
 """
 
 from __future__ import annotations
@@ -30,9 +32,9 @@ import matplotlib.pyplot as plt
 import networkx as nx
 import re
 
-# 依赖：你上传的本地文件（与本脚本位于同一目录或加入 PYTHONPATH）
-# - src/eap_wrapper.py: 提供 EAP(...) 主入口
-# - src/eap_graph.py:   提供 EAPGraph 类与图结构
+# Local deps expected in your repo (same directory or on PYTHONPATH)
+# - src/eap_wrapper.py: exposes EAP(...)
+# - src/eap_graph.py:   exposes EAPGraph
 try:
     from src.eap_wrapper import EAP  # type: ignore
     from src.eap_graph import EAPGraph  # type: ignore
@@ -41,7 +43,7 @@ except Exception as _e:
     EAPGraph = None
     _IMPORT_ERR = _e
 
-# 直接使用 TransformerLens 的 HookedTransformer
+# TransformerLens HookedTransformer
 from transformer_lens import HookedTransformer
 
 
@@ -49,12 +51,12 @@ from transformer_lens import HookedTransformer
 DEFAULT_MODEL = "Qwen/Qwen2.5-3B-Instruct"
 DEFAULT_DATA = "data/corrupt/level_1.json"
 DEFAULT_OUT  = "outputs/attr_scores"
-TOP_N_EDGES  = 200          # 电路图使用的 top-N 边
+TOP_N_EDGES  = 200          # top-N edges for circuit visualization
 FIG_DPI      = 200
-ATTN_EDGE_SCALE = 1.0      # ← 新增：attn 相关边的放大倍数
-CAND_MULTIPLIER = 3  
+ATTN_EDGE_SCALE = 1.0
+CAND_MULTIPLIER = 3
 
-# SDP 开关：与原脚本保持一致，避免 Flash/高效SDP引入的不确定性
+# SDP backend flags: keep deterministic behavior similar to your original runs
 os.environ["PYTORCH_SDP_BACKEND"] = "math"
 torch.backends.cuda.enable_flash_sdp(False)
 torch.backends.cuda.enable_mem_efficient_sdp(False)
@@ -75,13 +77,13 @@ def model_tag(name: str) -> str:
 
 
 def quant_tag(q: float) -> str:
-    """把分位 q 转成“保留百分比”的 tag，如 q=0.9 → '10'（保留 10%）"""
+    """Turn quantile q into a 'keep percentage' tag, e.g., q=0.9 → '10' (keep 10%)."""
     keep_pct = round((1.0 - q) * 100, 3)
     return ("%g" % keep_pct).replace(".", "_")
 
 
 def add_identity_mid_hooks(model: HookedTransformer) -> None:
-    """为每个 block 补上 hook_resid_mid = nn.Identity()（命名兼容你的可视化）"""
+    """Add hook_resid_mid = nn.Identity() per block (naming kept for your viz tooling)."""
     for i, block in enumerate(model.blocks):
         if not hasattr(block, "hook_resid_mid"):
             block.hook_resid_mid = nn.Identity()
@@ -89,7 +91,7 @@ def add_identity_mid_hooks(model: HookedTransformer) -> None:
 
 
 def try_resume_state_dict(model: HookedTransformer, ckpt_path: Path, strict: bool) -> None:
-    """尽量把 state_dict 灌进 TL 模型；缺失/多余 key 打印出来但不中断。"""
+    """Load a state_dict into the TL model; report missing/unexpected keys without failing."""
     sd = torch.load(ckpt_path, map_location="cpu")
     if isinstance(sd, dict) and "model_state" in sd:
         sd = sd["model_state"]
@@ -105,13 +107,14 @@ def try_resume_state_dict(model: HookedTransformer, ckpt_path: Path, strict: boo
 
 
 def to_tokens_batched(model: HookedTransformer, texts: List[str]) -> torch.Tensor:
-    """把一组文本 tokenization + 左侧 pad 到同长；加 BOS。"""
+    """Tokenize a batch of texts with left padding to equal length and prepend BOS."""
     return model.to_tokens(texts, prepend_bos=True)  # [B, S]
 
 
 def make_avg_diff_metric(model: HookedTransformer, true_str: str, false_str: str):
     """
-    avg_diff：取 batch 中每条样本末位置的 logit(True_last_tok) - logit(False_last_tok) ，再对 batch 求均值。
+    Average difference on the last position:
+    mean over batch of [logit(True_last_tok) - logit(False_last_tok)] at the final token.
     """
     true_tok = model.to_tokens(true_str, prepend_bos=True)[0].tolist()[-1]
     false_tok = model.to_tokens(false_str, prepend_bos=True)[0].tolist()[-1]
@@ -125,7 +128,7 @@ def make_avg_diff_metric(model: HookedTransformer, true_str: str, false_str: str
 
 
 def extract_clean_corrupt_pairs(examples: List[Dict]) -> Tuple[List[str], List[str]]:
-    """从 logic_group 的 prompts 数组中提取 clean/corrupt 文本对；不规范时兜底复制。"""
+    """Extract clean/corrupt pairs from logic_group.prompts; fallback to identical text if malformed."""
     clean, corrupt = [], []
     for ex in examples:
         if isinstance(ex, dict) and ("clean" in ex) and ("corrupt" in ex):
@@ -166,7 +169,7 @@ def eap_scores_for_subset(
     metric_false: str,
     batch_size: int,
 ) -> "EAPGraph":
-    """跑一遍 EAP，返回带有 eap_scores 的图对象（graph.eap_scores: [U, D]）"""
+    """Run EAP once and return an EAPGraph with eap_scores tensor of shape [U, D] (on CPU)."""
     if EAP is None or EAPGraph is None:
         raise RuntimeError(
             f"Failed to import EAP/EAPGraph from src/. Original error:\n{_IMPORT_ERR}"
@@ -177,7 +180,7 @@ def eap_scores_for_subset(
 
     metric = make_avg_diff_metric(model, metric_true, metric_false)
 
-    # 开启必要中间钩子
+    # enable required hooks
     model.set_use_attn_result(True)
     # model.set_use_attn_in(True)
     model.set_use_split_qkv_input(True)
@@ -188,8 +191,8 @@ def eap_scores_for_subset(
         clean_tokens=clean_tokens,
         corrupted_tokens=corrupt_tokens,
         metric=metric,
-        upstream_nodes=None,       # eap_graph 的默认节点集合
-        downstream_nodes=None,     # eap_graph 的默认节点集合
+        upstream_nodes=None,       # use EAPGraph defaults
+        downstream_nodes=None,     # use EAPGraph defaults
         batch_size=batch_size,
     )
     return graph
@@ -197,11 +200,11 @@ def eap_scores_for_subset(
 
 def threshold_and_sparse(graph: "EAPGraph", q: float) -> Dict:
     """
-    对 eap_scores 做全局分位数阈值，返回稀疏字典：
+    Apply a global quantile threshold to eap_scores and return a sparse dict:
     {
       "shape": [U, D],
       "threshold": float,
-      "edges": [ [u_idx, d_idx, score], ... ]   # 仅保留 >= threshold
+      "edges": [ [u_idx, d_idx, score], ... ]   # keep those with score >= threshold
     }
     """
     scores = graph.eap_scores  # Tensor[U, D] (cpu)
@@ -219,7 +222,7 @@ def threshold_and_sparse(graph: "EAPGraph", q: float) -> Dict:
 
 
 # ──────────────────────── Parsing & Graph Building ─────────────────────────
-# 更宽松的 layer / head 提取（保留接口，必要时扩展）
+# relaxed patterns for layer/head parsing
 _LAYERS = [re.compile(r"(?:blocks?|layer|blk)[\._\-\/]*(\d+)", re.I)]
 _HEADS  = [
     re.compile(r"(?:\.|_|/|^|-)h(?:ead)?[\._\-\/]*(\d+)", re.I),
@@ -228,12 +231,12 @@ _HEADS  = [
 
 def _parse_eap_node_relaxed(node_name: str) -> Tuple[int, str, int]:
     """
-    兼容以下命名：
+    Compatible with:
       - resid_pre.<L>        → (L, 'input', 0)
       - resid_post.<L>       → (L, 'output', 0)
       - mlp.<L>              → (L, 'down_proj', 0)
       - head.<L>.<H>.*       → (L, 'attn_head', H)
-    解析失败兜底：layer=0, type='output', index=0
+    Fallback: layer=0, type='output', index=0.
     """
     name = str(node_name)
     parts = name.split(".")
@@ -262,11 +265,11 @@ def build_nx_from_top_edges(
     include_mlp: bool = True,
 ) -> nx.DiGraph:
     """
-    用 EAPGraph 的 top-n 边构建 nx.DiGraph。
-    节点键为 "m,L,I,T"，原名存在属性 'raw' 中，以便贴标签。
-    这里会对“含 attn 的边”做权重放大（ATTN_EDGE_SCALE）。
+    Build an nx.DiGraph from the top-n edges of EAPGraph.
+    Node key format: "m,L,I,T", original raw name is stored in 'raw'.
+    Attention-related edges can be boosted (ATTN_EDGE_SCALE).
     """
-    # 1) 先多取一些候选边（避免放大后没机会入选）
+    # 1) take more candidates to allow boosting
     raw_n = max(n * CAND_MULTIPLIER, n + 100)
     raw_edges = list(graph.top_edges(n=raw_n, abs_scores=abs_scores))
 
@@ -275,22 +278,22 @@ def build_nx_from_top_edges(
         uL, uT, uI = _parse_eap_node_relaxed(u_name)
         vL, vT, vI = _parse_eap_node_relaxed(v_name)
 
-        # 过滤（和原逻辑一致）
+        # filtering
         if not include_attn and (uT in {"attn_head", "o_proj"} or vT in {"attn_head", "o_proj"}):
             continue
         if not include_mlp and (uT in {"mlp_in", "down_proj"} or vT in {"mlp_in", "down_proj"}):
             continue
 
-        # 2) 如果任一端是 attn 相关，放大该边的分数
+        # 2) optional boost for attention edges
         is_attn_edge = (uT in {"attn_head", "o_proj"}) or (vT in {"attn_head", "o_proj"})
-        s_boost = np.abs(float(s)) * (1.5 if is_attn_edge else 1.0) 
+        s_boost = np.abs(float(s)) * (1.5 if is_attn_edge else 1.0)
         boosted_edges.append((u_name, v_name, s_boost, uL, uT, uI, vL, vT, vI))
 
-    # 3) 按放大后的绝对值重新排序，截取前 n
+    # 3) sort by boosted magnitude and keep top-n
     boosted_edges.sort(key=lambda x: abs(x[2]), reverse=True)
     boosted_edges = boosted_edges[:n]
 
-    # 4) 构建图（使用放大后的权重）
+    # 4) construct graph
     G = nx.DiGraph()
     def key(L: int, T: str, I: int) -> str:
         return f"m,{L},{I},{T}"
@@ -310,8 +313,8 @@ def build_nx_from_top_edges(
 
 def _prune_keep_bidir_with_context(G: nx.DiGraph) -> nx.DiGraph:
     """
-    只保留：既有入边也有出边的节点（核心节点）以及这些核心节点的所有直接前驱/后继。
-    若筛完为空，则回退为原图以避免空图崩溃。
+    Keep nodes that have both incoming and outgoing edges (core nodes),
+    plus their immediate predecessors/successors. If empty, return G.
     """
     core = {n for n in G.nodes() if G.in_degree(n) > 0 and G.out_degree(n) > 0}
     keep = set(core)
@@ -357,7 +360,7 @@ def _map_node_id_and_label(attrs: Dict) -> Tuple[str, str, str]:
     if typ == "input":
         return "INPUT_GLOBAL", "input", "input"
 
-    # 合并所有 MLP/残差输出类到一个 m{L}
+    # merge MLP/residual-like outputs into m{L}
     if typ in {"mlp_in", "down_proj", "output", "o_proj"}:
         return f"M{L}", f"m{L}", "mlp"
 
@@ -368,7 +371,7 @@ def _map_node_id_and_label(attrs: Dict) -> Tuple[str, str, str]:
 
 
 def _edge_style(weight: float, strong_cut: float) -> Tuple[str, float]:
-    """根据权重正负与强弱设定颜色和粗细：正→蓝，负→红，弱→灰，极强→黑"""
+    """Edge color/width policy: strong→black; positive→blue; negative→red; weak→gray."""
     w = float(abs(weight))
     if w >= strong_cut:
         return ("#000000", 2.2)
@@ -386,7 +389,7 @@ def _collect_input_targets_after_merge(declared_ids: set, edge_dict: Dict) -> Li
 
 
 def _collect_logits_sources(nx_graph: nx.DiGraph) -> List[str]:
-    """作为 logits 的入边来源：最大层上的节点 + 无出边节点（合并后名称）"""
+    """Sources to LOGITS: nodes at the max layer and sink nodes (after merging labels)."""
     Lmax = _max_layer(nx_graph)
     ids = set()
     for n in nx_graph.nodes():
@@ -404,11 +407,11 @@ def _collect_logits_sources(nx_graph: nx.DiGraph) -> List[str]:
 
 
 def visualize_circuit_gv(nx_graph: nx.DiGraph, out_file: str) -> None:
-    """Graphviz 渲染；不可用时回退为 NetworkX 简图（保持原行为）"""
+    """Graphviz rendering; fallback to a simple NetworkX drawing if graphviz is unavailable."""
     try:
         import graphviz
     except Exception as e:
-        print("[viz] graphviz 不可用，回退到 networkx：", e)
+        print("[viz] graphviz unavailable, falling back to networkx:", e)
         return visualize_circuit_fallback(nx_graph, out_file=out_file)
 
     nodes = list(nx_graph.nodes())
@@ -422,9 +425,9 @@ def visualize_circuit_gv(nx_graph: nx.DiGraph, out_file: str) -> None:
 
     declared: set = set()
     layer_groups: Dict[int, set] = {}
-    node_colors: Dict[str, Tuple[str, str]] = {}  # 新增：记录 {node_id: (fill, border)}
+    node_colors: Dict[str, Tuple[str, str]] = {}  # record {node_id: (fill, border)}
 
-    # 声明映射后的节点
+    # declare mapped nodes
     for n in nodes:
         attrs = nx_graph.nodes[n]
         node_id, label, color_typ = _map_node_id_and_label(attrs)
@@ -433,30 +436,30 @@ def visualize_circuit_gv(nx_graph: nx.DiGraph, out_file: str) -> None:
         fill, border = _node_style_for_typ(color_typ)
         dot.node(node_id, label=label, shape="box", style="rounded,filled",
                  color=border, penwidth="1.4", fillcolor=fill, fontsize="18")
-        node_colors[node_id] = (fill, border)  # ← 记录颜色
+        node_colors[node_id] = (fill, border)
         declared.add(node_id)
         if node_id != "INPUT_GLOBAL":
             L = int(attrs.get("layer", 0))
             layer_groups.setdefault(L, set()).add(node_id)
 
-    # 各层 rank=same
+    # rank=same per layer
     for L, ids in sorted(layer_groups.items()):
         with dot.subgraph(name=f"rank_{L}") as s:
             s.attr(rank="same")
             for nid in sorted(ids):
                 s.node(nid)
 
-    # INPUT（最左）
+    # INPUT (leftmost)
     input_id = "INPUT_GLOBAL"
     fill, border = _node_style_for_typ("input")
     dot.node(input_id, label="input", shape="box", style="rounded,filled",
              color=border, penwidth="1.4", fillcolor=fill, fontsize="18")
-    node_colors[input_id] = (fill, border)  # 记录
+    node_colors[input_id] = (fill, border)
     with dot.subgraph(name="rank_input") as s:
         s.attr(rank="min")
         s.node(input_id)
 
-    # LOGITS（末层右侧）
+    # LOGITS (right)
     logits_id = "LOGITS"
     fill, border = _node_style_for_typ("logits")
     dot.node(logits_id, label="logits", shape="box", style="rounded,filled",
@@ -468,7 +471,7 @@ def visualize_circuit_gv(nx_graph: nx.DiGraph, out_file: str) -> None:
             s.node(logits_id)
     
     def _edge_color_from_node(node_id: str) -> str:
-        # 优先取“边框色”，没有就取“填充色”，再没有就灰
+        # prefer border color, then fill color, else gray
         fill_col, border_col = node_colors.get(node_id, (None, None))
         if border_col and isinstance(border_col, str) and border_col.startswith("#"):
             return border_col
@@ -476,7 +479,7 @@ def visualize_circuit_gv(nx_graph: nx.DiGraph, out_file: str) -> None:
             return fill_col
         return "#9aa0a6"
 
-    # 聚合同一对节点的多条边
+    # aggregate multiple edges between same endpoints
     edge_dict: Dict[Tuple[str, str], List[float]] = {}
     for u, v, d in nx_graph.edges(data=True):
         u_id, _, _ = _map_node_id_and_label(nx_graph.nodes[u])
@@ -484,24 +487,22 @@ def visualize_circuit_gv(nx_graph: nx.DiGraph, out_file: str) -> None:
         if u_id == v_id:
             continue
         w = float(d.get("weight", 0.0))
-
         edge_dict.setdefault((u_id, v_id), []).append(w)
 
-    # —— 新增：按“合并后源节点”累计所有外发边的权重，用于 LOGITS 边加权 ——
+    # collect outgoing weights per source (for LOGITS edge scaling)
     node_out_weights: Dict[str, List[float]] = {}
     for (u_id, v_id), ws_ in edge_dict.items():
         node_out_weights.setdefault(u_id, []).extend(ws_)
 
-    # 画边（对同一对端点取平均权重）
+    # draw edges using average weight per pair
     for (u_id, v_id), ws_ in edge_dict.items():
         w = float(np.mean(ws_))
-        # 线宽仍按强度；颜色继承出发节点
         _, penw = _edge_style(w, strong_cut)
         edge_col = _edge_color_from_node(u_id)
         attrs = {"color": edge_col, "penwidth": f"{penw:.2f}", "arrowsize": "0.7"}
         dot.edge(u_id, v_id, **attrs)
 
-    # INPUT → “在合并后无任何入边”的节点（颜色继承 INPUT）
+    # INPUT → nodes without any incoming edges (after merging)
     declared_ids_now = set(declared) | {"LOGITS"}
     input_targets = _collect_input_targets_after_merge(declared_ids_now, edge_dict)
     _, inp_border = node_colors.get(input_id, ("#d7f0d0", "#6ca966"))
@@ -510,15 +511,16 @@ def visualize_circuit_gv(nx_graph: nx.DiGraph, out_file: str) -> None:
             continue
         dot.edge(input_id, tid, color=inp_border, penwidth="1.1", arrowsize="0.8")
 
+    # nodes → LOGITS
     for sid in _collect_logits_sources(nx_graph):
         if sid == logits_id:
             continue
         ws_ = node_out_weights.get(sid, [])
-        edge_col = _edge_color_from_node(sid)  # ← 继承源节点颜色
+        edge_col = _edge_color_from_node(sid)
         if ws_:
             w_signed = float(np.mean(ws_))
             w_abs    = float(np.mean(np.abs(ws_)))
-            _, penw = _edge_style(w_signed, strong_cut)  # 只用线宽刻度
+            _, penw = _edge_style(w_signed, strong_cut)
             penw = max(penw, 0.9 + 1.1 * min(w_abs / (strong_cut + 1e-8), 1.0))
             attrs = {"color": edge_col, "penwidth": f"{penw:.2f}", "arrowsize": "0.8"}
         else:
@@ -533,7 +535,7 @@ def visualize_circuit_gv(nx_graph: nx.DiGraph, out_file: str) -> None:
 
 
 def visualize_circuit_fallback(nx_graph: nx.DiGraph, out_file: str) -> None:
-    """在不装 graphviz 时的简易回退（networkx draw）。"""
+    """Simple NetworkX fallback when graphviz is not installed."""
     import matplotlib.pyplot as plt
     pos = nx.spring_layout(nx_graph, seed=0)
     plt.figure(figsize=(10, 6))
@@ -554,8 +556,8 @@ def visualize_top_edges_as_circuit(
     include_attn: bool = True,
     include_mlp: bool = True,
 ) -> None:
-    """从 EAPGraph → NX → Graphviz PNG（参考图风格）"""
-    # 调试预览解析效果
+    """EAPGraph → NetworkX → Graphviz PNG."""
+    # debug: quick parse preview
     for u, v, s in graph.top_edges(n=min(8, n), abs_scores=True):
         uL, uT, uI = _parse_eap_node_relaxed(u)
         vL, vT, vI = _parse_eap_node_relaxed(v)
@@ -573,21 +575,21 @@ def visualize_top_edges_as_circuit(
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser()
     p.add_argument("--model", default=DEFAULT_MODEL,
-                   help="TransformerLens 兼容模型名（如：gpt2-small 或 TL-ported 名称）")
+                   help="TransformerLens-compatible model name (e.g., gpt2-small or TL-ported name)")
     p.add_argument("--data_file", default=DEFAULT_DATA,
-                   help="JSON：logic_groups[*].prompts[*].{clean,corrupt,...}")
+                   help="JSON with logic_groups[*].prompts[*].{clean,corrupt,...}")
     p.add_argument("--quants", nargs="+", type=float, default=[0.5],
-                   help="分位阈值（取 >= q 对应的分数，进而“保留 (1-q) 比例”）")
+                   help="Quantile thresholds; keep scores >= q (i.e., keep (1-q) proportion)")
     p.add_argument("--subset_k", type=int, default=10,
-                   help="每个 split 中 partA/partB 各取 k 条样本")
-    p.add_argument("--splits", type=int, default=1, help="随机切分次数")
-    p.add_argument("--seed", type=int, default=0, help="随机种子基数")
-    p.add_argument("--batch_size", type=int, default=1, help="EAP 前反向 batch 大小")
-    p.add_argument("--out_root", default=DEFAULT_OUT, help="结果根目录")
-    p.add_argument("--resume", type=Path, help="可选：state_dict 路径（尽量灌入 TL 模型）")
-    p.add_argument("--strict_resume", action="store_true", help="严格 key 对齐加载 state_dict")
-    p.add_argument("--ans_true", default=" True", help="avg_diff 正类词（默认 ' True'）")
-    p.add_argument("--ans_false", default=" False", help="avg_diff 负类词（默认 ' False'）")
+                   help="Per split, sample size k for partA and partB each")
+    p.add_argument("--splits", type=int, default=1, help="Number of random splits")
+    p.add_argument("--seed", type=int, default=0, help="Random seed base")
+    p.add_argument("--batch_size", type=int, default=1, help="Batch size for EAP forward/backward")
+    p.add_argument("--out_root", default=DEFAULT_OUT, help="Output root directory")
+    p.add_argument("--resume", type=Path, help="Optional: path to state_dict to load into TL model")
+    p.add_argument("--strict_resume", action="store_true", help="Strict key matching when loading state_dict")
+    p.add_argument("--ans_true", default=" True", help="Positive token for avg_diff (default ' True')")
+    p.add_argument("--ans_false", default=" False", help="Negative token for avg_diff (default ' False')")
     return p
 
 
@@ -595,38 +597,38 @@ def main() -> None:
     args = build_parser().parse_args()
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    # 种子：注意 split 内部仍会基于 seed 偏移
+    # seeds
     set_seed_all(args.seed)
 
-    # 1) 加载 TL 模型
+    # 1) load TL model
     print(f"[load] HookedTransformer.from_pretrained({args.model}) on {device}")
     model = HookedTransformer.from_pretrained(args.model, device=device)
 
-    # 有些配置项可能不存在，包容式设置
+    # some configs may not exist; set defensively
     try:
         model.cfg.parallel_attn_mlp = False
     except Exception:
         pass
     add_identity_mid_hooks(model)
 
-    # 2) resume（若有）
+    # 2) resume if provided
     run_tag = Path(args.resume).stem if args.resume else "origin"
     if args.resume is not None:
         try_resume_state_dict(model, args.resume, args.strict_resume)
     print(f"[info] Using run tag: {run_tag}")
 
-    # 3) 目录
+    # 3) directories
     out_root = Path(args.out_root).resolve()
     dataset_tag = Path(args.data_file).stem
     model_dir = out_root / dataset_tag / model_tag(args.model)
     for q in args.quants:
         (model_dir / quant_tag(q) / run_tag / "figures").mkdir(parents=True, exist_ok=True)
 
-    # 4) 读取数据
+    # 4) load data
     with open(args.data_file, "r", encoding="utf-8") as f:
         logic_groups = json.load(f)
 
-    # 5) 遍历逻辑组
+    # 5) iterate logic groups
     for idx, logic in enumerate(logic_groups):
         examples = logic.get("prompts", [])
         if not examples:
@@ -637,7 +639,7 @@ def main() -> None:
             continue
         print(f"\n▶ {logic_name} — {len(examples)} prompts")
 
-        # 6) 抽样切分
+        # 6) sampling/splitting
         k = min(args.subset_k, max(len(examples) // 2, 1))
         if dataset_tag == "level_3":
             k = min(k, 4)
@@ -649,7 +651,7 @@ def main() -> None:
             # rng.shuffle(shuffled)
             partA, partB = shuffled[:k], shuffled[k: 2 * k]
 
-            # 6.1) A 子集
+            # 6.1) subset A
             clean_A, corrupt_A = extract_clean_corrupt_pairs(partA)
             graph_A = eap_scores_for_subset(
                 model, clean_A, corrupt_A, args.ans_true, args.ans_false, args.batch_size
@@ -674,7 +676,7 @@ def main() -> None:
                 save_heatmap(graph_A.eap_scores, heat_path, title=f"{logic_name} partA (q={q:.3f})")
                 print(f"   ✓ partA  q={q:.3f} → {json_path.relative_to(model_dir)}")
 
-            # 6.2) B 子集（若有）
+            # 6.2) subset B (if exists)
             if partB:
                 clean_B, corrupt_B = extract_clean_corrupt_pairs(partB)
                 graph_B = eap_scores_for_subset(
