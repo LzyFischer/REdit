@@ -57,13 +57,11 @@ def get_args() -> argparse.Namespace:
     ap.add_argument("--n_logic_per_item", type=int, default=2)
     ap.add_argument("--seed", type=int, default=0)
 
-    # logic 选择（逗号分隔，二选一，include 优先于 exclude）
     ap.add_argument("--include_logic", type=str, default='',
                     help="@file:path.txt")
     ap.add_argument("--exclude_logic", type=str, default="",
                     help="@file:path.txt")
     # =============================================================================
-    # Args（在 get_args() 里新增两个参数）
     # =============================================================================
     ap.add_argument(
         "--include_rows", type=str, default="",
@@ -106,7 +104,6 @@ def get_args() -> argparse.Namespace:
     return args
 
 args = get_args()
-# 解析逻辑集合
 def _to_set(s: str) -> set[str]:
     return set([x.strip() for x in s.split(",") if x.strip()])
 
@@ -345,20 +342,19 @@ model.gradient_checkpointing_enable()
 # print(f"[INFO] Loaded {len(rows)} rows → grouping …")
 
 rows_all = load_augmented_json_grouped(args.data_json)
-key_list = list(rows_all.keys())  # 保序
+key_list = list(rows_all.keys())  #
 print(f"[INFO] Loaded {len(key_list)} rows → applying row-index filters …")
 
 inc = _expand_indices(args.include_rows, len(key_list)) if args.include_rows else []
 exc = _expand_indices(args.exclude_rows, len(key_list)) if args.exclude_rows else []
 
 if inc:
-    keep_idx = set(inc)                       # include 优先
+    keep_idx = set(inc)                       # 
 else:
-    keep_idx = set(range(len(key_list)))      # 先全保留
+    keep_idx = set(range(len(key_list)))      #
     for i in exc:
         keep_idx.discard(i)
 
-# 重新组装为 dict（保持键的原始插入顺序）
 rows = { key_list[i]: rows_all[key_list[i]] for i in sorted(keep_idx) }
 print(f"[INFO] Kept {len(rows)}/{len(rows_all)} rows after index filtering")
 
@@ -379,7 +375,6 @@ print(f"[INFO] Tracking {len(nodes)} computational nodes")
 
 # =============================================================================
 # Contrastive loss (effect-space) + consistency
-# 返回 (loss, anchor_predgrad_named)
 # =============================================================================
 
 
@@ -391,7 +386,6 @@ def compute_task_loss(item: Dict, task_idx: int) -> Tuple[torch.Tensor, Dict[str
     took_anchor = False
 
     for logic, pair_list in item.items():
-            # 过滤逻辑类型
         effects[logic] = []
         for idx, g1_dict in enumerate(pair_list[0]):
             clean_ids = g1_dict["clean_ids"].to(DEVICE)
@@ -410,7 +404,6 @@ def compute_task_loss(item: Dict, task_idx: int) -> Tuple[torch.Tensor, Dict[str
             with corrupt_cache:
                 _ = model(**inputs_cor)
 
-            # 兼容两种返回：1) effect  2) (effect, pred_grad_named)
             ret = AP.calculate_effect(
                 model, clean_cache, corrupt_cache, nodes, tok, out_clean, answers,
             )
@@ -421,7 +414,6 @@ def compute_task_loss(item: Dict, task_idx: int) -> Tuple[torch.Tensor, Dict[str
 
             effects[logic].append(effect)
 
-            # 只用“第一个样本”作为 anchor（当步的 anchor）
             if (not took_anchor) and (maybe_pg is not None):
                 anchor_pg = {k: v.detach() for k, v in maybe_pg.items()}
                 took_anchor = True
@@ -487,7 +479,6 @@ def apply_pg_null_projection_from_dict(pg_named: Dict[str, torch.Tensor] | None,
                                        eps: float = 1e-8):
     """
     grad <- grad - ratio * ((grad·g)/(g·g+eps)) * g
-    其中 g 即 compute_task_loss 返回的 anchor_pg（参数名对齐的梯度字典）。
     """
     if pg_named is None or ratio <= 0.0:
         return
@@ -528,14 +519,12 @@ for meta_iter in trange(len(ds), desc="meta", colour="green"):
         EFFECT_MEM.on_epoch_end()
         loader_iter = iter(loader)
         item = next(loader_iter)
-        # 过滤逻辑（整段文本精确匹配，include 优先）
     item = filter_item_by_logic_fulltext(
         item,
         include_set=args.include_logic_set,
         exclude_set=args.exclude_logic_set,
     )
     # if item is not empty:
-    # 过滤后仅统计字符串键的数量；不足 2 个逻辑则跳过该 meta-iter（你的对比损失需要 ≥2）
     n_logic = sum(1 for k in item.keys() if isinstance(k, str))
     if n_logic < 2:
         continue
@@ -554,7 +543,6 @@ for meta_iter in trange(len(ds), desc="meta", colour="green"):
             inner_opt.zero_grad(set_to_none=True)
             loss.backward()
 
-            # 直接使用 compute_task_loss 取到的 anchor_pg 进行投影
             try:
                 apply_pg_null_projection_from_dict(
                     anchor_pg,

@@ -32,9 +32,7 @@ ANSWER       = " True"   # NOTE: leading space if your tokenizer splits like tha
 # -----------------------------UTILS-----------------------------------
 def report_param_grads(model: torch.nn.Module, topk: int = 10) -> Tuple[int, List[Tuple[str, float]]]:
     """
-    统计参数梯度并打印 Top-K。
     Returns:
-        nonzero (int): 有非零梯度的参数个数
         top_items (List[Tuple[str, float]]): [(param_name, grad_abs_sum), ...]
     """
     nonzero = 0
@@ -58,19 +56,6 @@ def report_effects(
     topk_node: int = 15,
     topk_head: int = 40
 ) -> Tuple[Dict[str, float], List[Tuple[str, int, float]], List[Tuple[str, float]], List[Tuple[str, int, float]]]:
-    """
-    对每个节点/每个 head 的 effect 做统计并打印 Top-K。
-
-    effects:
-        - q/k/v: 形状 [B, n_heads] 或 [B, n_kv_heads] (可能扩展到 n_heads)
-        - 其他: 形状 [B]
-
-    Returns:
-        node_scores: {node_name: scalar_score}
-        head_scores: [(node_name, head_idx, score)]
-        top_nodes  : 前 topk_node 节点 [(node_name, score)]
-        top_heads  : 前 topk_head 头   [(node_name, head_idx, score)]
-    """
     node_scores = {}
     head_scores = []
 
@@ -177,19 +162,12 @@ def calculate_effect(
     last_token_only: bool = True,
     return_debug: bool = False,
 ) -> Tuple[Dict[str, torch.Tensor], Dict[str, torch.Tensor], Dict[str, Dict[str, torch.Tensor]]]:
-    """
-    返回:
-      effects: node -> Tensor  (q/k/v: [B, n_heads or n_kv_heads], others: [B])
-      act_grads: node -> Tensor (激活在最后 token 的梯度，形状 [B, hidden])
-      debug_cache: node -> {"diff":..., "grad":..., "eff":...}（当 return_debug=True）
-    """
     n_heads    = model.config.num_attention_heads
     n_kv_heads = getattr(model.config, "num_key_value_heads", n_heads)
     group_size = max(1, n_heads // max(1, n_kv_heads))
 
     metric = token_logit_metric(out_clean, tokenizer, answer)
 
-    # 对每个节点的 clean 激活，求 metric 对激活的梯度
     grads = torch.autograd.grad(
         metric,
         [clean_cache.cache[n] for n in nodes],
@@ -213,7 +191,6 @@ def calculate_effect(
             diff_last = diff_full[:, -1]       # [B, hidden]
             grad_last = g[:, -1]               # [B, hidden]
         else:
-            # 展平所有 token
             B, S, H = diff_full.shape
             diff_last = diff_full.reshape(B, S*H)
             grad_last = g.reshape(B, S*H)
@@ -221,16 +198,14 @@ def calculate_effect(
         leaf = n.split(".")[-1]
         if leaf in ("q_proj", "k_proj", "v_proj"):
             if leaf == "q_proj":
-                # q 使用全部 n_heads
                 diff_h = view_heads(diff_last, n_heads)    # [B, n_heads, head_dim]
                 grad_h = view_heads(grad_last, n_heads)    # [B, n_heads, head_dim]
                 eff_h  = per_head_effect(diff_h, grad_h)   # [B, n_heads]
                 effects[n]   = eff_h
-                act_grads[n] = grad_last                   # 原始激活梯度（[B, hidden]）
+                act_grads[n] = grad_last                 
                 if return_debug:
                     debug_cache[n] = {"diff": diff_h, "grad": grad_h, "eff": eff_h}
             else:
-                # k/v 使用 n_kv_heads；如需与 q 对齐，可 repeat_interleave 到 n_heads
                 diff_kv = view_heads(diff_last, n_kv_heads)  # [B, n_kv_heads, head_dim]
                 grad_kv = view_heads(grad_last, n_kv_heads)  # [B, n_kv_heads, head_dim]
                 eff_kv  = per_head_effect(diff_kv, grad_kv)  # [B, n_kv_heads]
@@ -239,7 +214,6 @@ def calculate_effect(
                 if return_debug:
                     debug_cache[n] = {"diff": diff_kv, "grad": grad_kv, "eff": eff_kv}
         else:
-            # 其他层整体 effect：对 hidden 维平均
             eff = (diff_last * grad_last).reshape(diff_last.size(0), -1).mean(dim=1)  # [B]
             effects[n]   = eff
             act_grads[n] = grad_last
@@ -276,17 +250,14 @@ def main():
         inputs_cor   = tokenizer(CORR_TEXT, return_tensors="pt").to(DEVICE)
         _            = model(**inputs_cor)
 
-    # 2) 直接用 calculate_effect 同时拿到 effect 和 activation-grad
     effects, act_grads, debug_cache = calculate_effect(
         model, clean_cache, corrupt_cache, nodes, tokenizer, out_clean, ANSWER, return_debug=True
     )
 
-    # 3) 定义一个简单的 effect 损失（示例）
     if len(effects) == 0:
         raise RuntimeError("No effects were computed (all grads were None). Check node list.")
     loss_on_effects = torch.stack([v.mean() for v in effects.values()]).pow(2).mean()
 
-    # 4) 反传到参数
     for p in model.parameters():
         if p.grad is not None:
             p.grad.zero_()
@@ -303,7 +274,6 @@ def main():
     # Optional: sanity prints & interactive
     some_node = next(iter(effects))
     print(f"[DEBUG] one effect sample -> {some_node}: {effects[some_node].detach().cpu().numpy()}")
-    # 你也可以用 act_grads[some_node] 做进一步分析 / 保护子空间等
     # pdb.set_trace()
 
 if __name__ == "__main__":

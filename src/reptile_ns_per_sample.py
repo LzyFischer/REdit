@@ -60,7 +60,7 @@ DEVICE = AP.DEVICE
 DTYPE = AP.DTYPE
 MODEL_NAME = AP.MODEL_NAME
 
-SAVE_EVERY = 10          # << 新增：每隔多少个 meta-iter 存一次
+SAVE_EVERY = 10          
 SAVE_TAG   = "reptile_ns"
 
 torch.manual_seed(SEED)
@@ -108,7 +108,6 @@ def save_checkpoint(step: int, tag: str = SAVE_TAG) -> Path:
         except Exception:
             pass
     torch.save(payload, path)
-    # 也写一个“最新”的滚动文件，便于 resume
     torch.save(payload, CKPT_DIR / f"{tag}_latest.pt")
     return path
 
@@ -364,7 +363,6 @@ for meta_iter in trange(META_ITERS, desc="meta", colour="green"):
         v.data.add_(META_LR * delta_sum[k].to(v.device) / TASKS_PER_META)
 
     step = meta_iter + 1
-    # 每 SAVE_EVERY 次存一次；最后一步必存
     if (step % SAVE_EVERY == 0) or (step == META_ITERS):
         ckpt_path = save_checkpoint(step)
         print(f"[INFO] saved checkpoint → {ckpt_path}")

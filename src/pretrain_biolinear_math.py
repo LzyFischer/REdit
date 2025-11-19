@@ -5,7 +5,6 @@ from torch.nn.utils import clip_grad_norm_
 from torch.utils.data import DataLoader
 from transformers import AutoTokenizer, AutoModelForCausalLM, set_seed, get_cosine_schedule_with_warmup
 
-# 你项目里的数据加载
 from src.get_dataset_math import LogicDataset, load_augmented_json_grouped, collate_fn
 
 # BioLinear patch
@@ -17,7 +16,6 @@ def flatten_logic_batch_to_lm(batch, device, ignore_index=-100):
     # batch: { logic: [ [g1_dict, g2_dict], ... ] }
     for _, pair_list in batch.items():
         for g1, g2 in pair_list:
-            # g1、g2 的每个字段形状都是 [m, L]，直接拼 batch 维
             for ids, am in [
                 (g1["clean_ids"],    g1["clean_mask"]),
                 (g2["clean_ids"],    g2["clean_mask"]),
@@ -29,7 +27,6 @@ def flatten_logic_batch_to_lm(batch, device, ignore_index=-100):
 
     input_ids = torch.cat(xs, dim=0).to(device, non_blocking=True)
     attn_mask = torch.cat(masks, dim=0).to(device, non_blocking=True)
-    # labels 与 input_ids 同形状；把 padding 位置设为 ignore_index
     labels = input_ids.clone()
     labels[attn_mask == 0] = ignore_index
     return input_ids, attn_mask, labels
@@ -71,7 +68,7 @@ def main():
 
     n_heads = getattr(model.config, "num_attention_heads", getattr(model.config, "n_head", 1))
     replace_linear_with_biolinear(model, n_heads=n_heads, l0=args.l0)
-    target_dtype = next(model.parameters()).dtype  # 通常是 torch.bfloat16
+    target_dtype = next(model.parameters()).dtype  
     model.to(device).to(target_dtype)
     if hasattr(model, "gradient_checkpointing_enable"):
         model.gradient_checkpointing_enable()
@@ -100,7 +97,6 @@ def main():
             data_iter = iter(loader)
             batch = next(data_iter)
 
-        # 🔧 关键修改：把嵌套结构展平成标准 LM 批
         input_ids, attn_mask, labels = flatten_logic_batch_to_lm(batch, device)
 
         # outputs = model(input_ids=input_ids, attention_mask=attn_mask, labels=labels)

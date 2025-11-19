@@ -31,12 +31,11 @@ import pdb
 # -----------------------------------------------------------------------------
 def purge_cache(cache):
     for k, t in cache.cache.items():
-        t.grad = None          # ① 释放 grad
-        cache.cache[k] = None  # ② 去掉对激活本身的引用
+        t.grad = None        
+        cache.cache[k] = None  #
     cache.cache.clear()
 
 def flatten_effect_dict(effect_dict: Dict[str, torch.Tensor]) -> torch.Tensor:
-    # 将每个 tensor flatten，然后拼接起来
     flat_tensors = [v.flatten() for k, v in sorted(effect_dict.items())]
     return torch.cat(flat_tensors, dim=0)
 

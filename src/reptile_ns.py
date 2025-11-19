@@ -197,7 +197,6 @@ def apply_pg_null_projection_from_dict(pg_named: Dict[str, torch.Tensor] | None,
     if every > 1 and (_proj_counter % every) != 0:
         return
 
-    # 收集当前 .grad
     cur = {}
     for name, p in model.named_parameters():
         if p.requires_grad:

@@ -52,11 +52,6 @@ def EAP_clean_forward_hook(
         upstream_activations_difference[:, :, hook_slice, :] += activations
 
 def _expand_kv_to_heads(result: torch.Tensor, model) -> torch.Tensor:
-    """
-    若 result 的“头维度”为 n_kv_heads，而 EAP 的累加目标按 n_heads 组织，
-    则把该维度按组复制，扩展到 n_heads。否则原样返回。
-    期望 result 的形状为 [..., H, ...]，其中 H 是头维度。
-    """
     n_heads = getattr(model.cfg, "n_heads", None)
     n_kv_heads = getattr(model.cfg, "n_key_value_heads", n_heads)
     if n_heads is None or n_kv_heads is None:
@@ -65,9 +60,6 @@ def _expand_kv_to_heads(result: torch.Tensor, model) -> torch.Tensor:
     if n_kv_heads == n_heads:
         return result
 
-    # 找到“头维度”位置：常见为倒数第二维（..., heads, d_head）
-    # 也可能已经把 d_head 聚合掉，只剩 [..., heads]
-    # 我们用启发式：优先尝试 dim=-2；若该维不是 n_kv_heads，再尝试最后一维 dim=-1。
     head_dim = None
     if result.dim() >= 2 and result.size(-2) == n_kv_heads:
         head_dim = -2
@@ -75,11 +67,10 @@ def _expand_kv_to_heads(result: torch.Tensor, model) -> torch.Tensor:
         head_dim = -1
 
     if head_dim is None:
-        return result  # 看不出头维，保持安全退出
+        return result  
 
     repeat_factor = n_heads // n_kv_heads
     if repeat_factor * n_kv_heads != n_heads:
-        # 非整除（极罕见），保守返回原值以免错累加
         return result
 
     return result.repeat_interleave(repeat_factor, dim=head_dim)

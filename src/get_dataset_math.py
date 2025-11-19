@@ -9,36 +9,12 @@ from itertools import combinations
 
 import torch
 from torch.utils.data import Dataset
-from transformers import AutoTokenizer  # 仅类型提示可选
+from transformers import AutoTokenizer  
 
-# ---------------- 基础工具 ----------------
 def chunk_indices(n: int, bs: int) -> List[List[int]]:
     return [list(range(i, min(i + bs, n))) for i in range(0, n, bs)]
 
-# ---------------- 读取你“目标格式”的 JSON ----------------
 def load_augmented_json_grouped(path: Path) -> Dict[str, List[Dict]]:
-    """
-    输入（你的目标格式，列表）:
-    [
-      {
-        "word_idxs": {...},
-        "prompts": [
-          {
-            "clean": "...",
-            "corrupt": "...",
-            "answers": [" 357"],        # 注意可能有前导空格
-            "wrong_answers": [" 356"],  # 同理
-            "token_mismatch": false,
-            "logic": "0"
-          }
-        ]
-      },
-      ...
-    ]
-
-    输出:
-      { logic_str: [ {clean, corrupt, answer, wrong_answer}, ... ] }
-    """
     grouped: Dict[str, List[Dict]] = defaultdict(list)
     blocks = json.loads(path.read_text(encoding="utf-8"))
     for block in blocks:
@@ -61,7 +37,6 @@ def load_augmented_json_grouped(path: Path) -> Dict[str, List[Dict]]:
             })
     return grouped
 
-# ---------------- Dataset：与“第二段”一致 ----------------
 class LogicDataset(Dataset):
     """
     __getitem__ 返回:

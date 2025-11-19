@@ -100,10 +100,9 @@ NUM_RE = re.compile(
 )
 
 def _parse_float(s: str) -> Optional[float]:
-    """从字符串里尽量抽取第一个数字并转成 float."""
     if s is None:
         return None
-    m = NUM_RE.search(s.replace("−", "-"))  # 兼容特殊负号
+    m = NUM_RE.search(s.replace("−", "-")) 
     if not m:
         return None
     num = m.group(0).replace(",", "")
@@ -113,7 +112,6 @@ def _parse_float(s: str) -> Optional[float]:
         return None
 
 def numeric_equal(pred: float, gold: float, *, atol: float = 1e-6, rtol: float = 1e-6) -> bool:
-    """数值相等判定：|pred-gold| <= atol + rtol*|gold|."""
     if pred is None or gold is None:
         return False
     return abs(pred - gold) <= (atol + rtol * abs(gold))
@@ -129,10 +127,8 @@ def encode_example(row: dict, tokenizer, src_path: Path):
     row: {"text": problem_str, "label": <float or int>}
     """
     prompt = f"{row['text']}\nAnswer with only the final numeric result.\nAnswer:"
-    # 统一把 label 转成最紧凑的字符串，避免 "357.0" / "357" 不一致
     gold = row["label"]
     if isinstance(gold, str):
-        # 若已是字符串，尝试转成 float 再格式化
         g = _parse_float(gold)
         answer = str(int(g)) if (g is not None and g.is_integer()) else (gold.strip())
     else:
@@ -153,16 +149,13 @@ def encode_example(row: dict, tokenizer, src_path: Path):
     return {"input_ids": input_ids, "attention_mask": attn_mask, "labels": labels}
 
 def generate_answer(prompt: str, model, tokenizer, src_path: Path, max_new: int = 16) -> Optional[float]:
-    """生成文本后抽取第一个数字，返回 float（失败返回 None）"""
     model.eval()
     with torch.no_grad():
-        # 针对数学问答的简单提示
         templ = f"{prompt}\nAnswer with only the final numeric result.\nAnswer:"
         ids = tokenizer(templ, return_tensors="pt").to(model.device)
         out = model.generate(**ids, max_new_tokens=max_new, do_sample=False)
         text = tokenizer.decode(out[0], skip_special_tokens=True)
 
-    # 取 "Answer:" 之后一段文本更干净
     if "Answer:" in text:
         text = text.split("Answer:", 1)[1]
     answer = _parse_float(text.strip())
@@ -178,8 +171,7 @@ CUE = re.compile(
 
 def harvest_examples_from_templates(path: Path, seed: int) -> List[dict]:
     """
-    读取 {template_id: [ {problem, result}, ... ]}，展开成扁平列表：
-    每条返回：
+
       {
         "logic": <template_id_str>,
         "train": {"text": problem_str, "label": <float>},

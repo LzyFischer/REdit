@@ -246,7 +246,7 @@ print(f"[INFO] Tracking {len(nodes)} computational nodes")
 
 # =============================================================================
 # Contrastive loss (effect-space) + consistency
-# 返回 (loss, anchor_predgrad_named)
+# (loss, anchor_predgrad_named)
 # =============================================================================
 
 def compute_task_loss(item: Dict, task_idx: int) -> Tuple[torch.Tensor, Dict[str, torch.Tensor] | None]:
@@ -276,7 +276,6 @@ def compute_task_loss(item: Dict, task_idx: int) -> Tuple[torch.Tensor, Dict[str
             with corrupt_cache:
                 _ = model(**inputs_cor)
 
-            # 兼容两种返回：1) effect  2) (effect, pred_grad_named)
             ret = AP.calculate_effect(
                 model, clean_cache, corrupt_cache, nodes, tok, out_clean, answers,
             )
@@ -287,7 +286,6 @@ def compute_task_loss(item: Dict, task_idx: int) -> Tuple[torch.Tensor, Dict[str
 
             effects[logic].append(effect)
 
-            # 只用“第一个样本”作为 anchor（当步的 anchor）
             if (not took_anchor) and (maybe_pg is not None):
                 anchor_pg = {k: v.detach() for k, v in maybe_pg.items()}
                 took_anchor = True
@@ -353,7 +351,6 @@ def apply_pg_null_projection_from_dict(pg_named: Dict[str, torch.Tensor] | None,
                                        eps: float = 1e-8):
     """
     grad <- grad - ratio * ((grad·g)/(g·g+eps)) * g
-    其中 g 即 compute_task_loss 返回的 anchor_pg（参数名对齐的梯度字典）。
     """
     if pg_named is None or ratio <= 0.0:
         return
@@ -362,7 +359,6 @@ def apply_pg_null_projection_from_dict(pg_named: Dict[str, torch.Tensor] | None,
     if every > 1 and (_proj_step % every) != 0:
         return
 
-    # 收集当前 .grad
     cur = {}
     for name, p in model.named_parameters():
         if p.requires_grad:
@@ -409,7 +405,6 @@ for meta_iter in trange(args.meta_iters, desc="meta", colour="green"):
             inner_opt.zero_grad(set_to_none=True)
             loss.backward()
 
-            # 直接使用 compute_task_loss 取到的 anchor_pg 进行投影
             try:
                 apply_pg_null_projection_from_dict(
                     anchor_pg,
